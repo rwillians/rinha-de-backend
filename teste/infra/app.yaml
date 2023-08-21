@@ -1,0 +1,9 @@
+---
+service: github-actions
+runtime: custom
+env: flex
+resources:
+  cpu: 4
+  memory_gb: 6
+manual_scaling:
+  instancies: 5
