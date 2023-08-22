@@ -14,7 +14,7 @@ env:
 jobs:
   atualiza-contador:
     name: Atualizar o contador de participantes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout da branch
