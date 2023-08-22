@@ -1,0 +1,4 @@
+#! /usr/bin/env sh
+
+./gerar-pessoas > ../../user-files/resources/pessoas_payload.tsv
+./gerar-termos-de-busca > ../../user-files/resources/termos-busca.tsv

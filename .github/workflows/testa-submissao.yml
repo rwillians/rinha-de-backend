@@ -1,0 +1,146 @@
+name: Testa API submetida
+
+on:
+  workflow_dispatch:
+    inputs:
+      participante:
+        description: |
+          Nome do diretório onde encontra-se o docker compose do participante.
+          Por exemplo, para o docker compose localizado em "participantes/rwillians/docker-compose.yml", você deve informar nesse campo o valor "rwillians".
+        required: true
+        type: choice
+        options:
+          - 'rwillians'
+
+env:
+  GATLING_VERSION: '3.9.5'
+  JQ_VERSION: '1.7rc1'
+
+jobs:
+  teste:
+    name: Testando submissão de ${{ inputs.participante }}
+    runs-on: 'ubuntu-22.04'
+
+    steps:
+      - name: Checkout da branch
+        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
+        with:
+          fetch-depth: 1
+
+      - name: Instalar dependências
+        run: |
+          apt-get update -qq && apt-get install -qq -y net-tools
+        # apt-get update -qq && apt-get install -qq -y git curl
+        # curl -fsSL https://github.com/jqlang/jq/releases/download/jq-${{ env.JQ_VERSION }}/jq-linux-amd64 >> /usr/bin/jq
+        # chmod +x /usr/bin/jq
+
+      - name: Setup OpenJDK
+        uses: actions/setup-java@cd89f46ac9d01407894225f350157564c9c7cee2 # v3.12.2
+        with:
+          distribution: temurin
+          java-version: '17.0.2'
+
+      - uses: actions/cache@88522ab9f39a2ea568f7027eddc7d8d8bc9d59c8 # v3.3.1
+        id: gatling-cache
+        with:
+          path: testes/stress/deps/gatling-charts-highcharts-bundle-${{ env.GATLING_VERSION }}-bundle.zip
+          key: gatling-charts-highcharts-bundle-${{ env.GATLING_VERSION }}-bundle.zip
+
+      - name: Baixar Gatling
+        working-directory: testes/stress/deps
+        if: steps.gatling-cache.outputs.cache-hit != 'true'
+        run: |
+          ARQUIVO="gatling-charts-highcharts-bundle-${{ env.GATLING_VERSION }}-bundle.zip"
+          URL="https://repo1.maven.org/maven2/io/gatling/highcharts/gatling-charts-highcharts-bundle/${{ env.GATLING_VERSION }}/${ARQUIVO}"
+
+          echo "::debug::Downloading Gatling ${{ env.GATLING_VERSION }} from ${URL}"
+          echo "::debug::Destination ${PWD}/${ARQUIVO}"
+          wget ${URL}
+
+      - name: Instalar Gatling
+        id: gatling
+        working-directory: testes/stress/deps
+        run: |
+          ARQUIVO="gatling-charts-highcharts-bundle-${{ env.GATLING_VERSION }}-bundle.zip"
+
+          echo "::debug::Extracting ${ARQUIVO}"
+          unzip -q ${ARQUIVO}
+
+          echo "::set-output name=bin::${PWD}/gatling-charts-highcharts-bundle-${{ env.GATLING_VERSION }}/bin/gatling.sh"
+
+      - uses: actions/cache@88522ab9f39a2ea568f7027eddc7d8d8bc9d59c8 # v3.3.1
+        id: carga-cache
+        with:
+          path: |
+            testes/stress/user-files/resources/pessoas-payloads.tsv
+            testes/stress/user-files/resources/termos-busca.tsv
+          key: carga-de-teste-${{ env.CARGA_GERADOR }}-${{ env.CARGA_VERSION }}
+
+      - name: Gerar carga de teste
+        working-directory: testes/stress/geradores/${{ env.CARGA_GERADOR }}
+        if: steps.carga-cache.outputs.cache-hit != 'true'
+        run: |
+          if [ -f "package.json" ]; then
+            npm ci
+          fi
+
+          ./gerar-pessoas > ../../user-files/resources/pessoas-payloads.tsv
+          ./gerar-termos-busca > ../../user-files/resources/termos-busca.tsv
+
+      - name: Setup carga
+        id: carga
+        working-directory: testes/stress
+        run: |
+          echo "::set-output name=resources-path::${PWD}/user-files/resources"
+
+      - name: Subindo a aplicação
+        working-directory: participantes/${{ inputs.participante }}
+        id: docker-compose
+        run: docker compose down --remove-orphans --volumes && docker compose up -d
+
+      - name: Esperando a aplicação subir
+        run: sleep 30
+
+      - name: Executando Gatling
+        working-directory: testes/stress
+        id: teste
+        run: |
+          echo "::debug::Running gatling:"
+          echo "::debug::  ${{ steps.gatling.outputs.bin }}"
+          echo "::debug::    -rm local "
+          echo "::debug::    -rd \"${{ inputs.participante }} ${{ github.sha }}\"
+          echo "::debug::    -s RinhaBackendSimulation"
+          echo "::debug::    -rf ${PWD}/user-files/results"
+          echo "::debug::    -sf ${PWD}/user-files/simulations"
+          echo "::debug::    -rsf ${{ steps.carga.outputs.resources-path }}"
+
+          ${{ steps.gatling.outputs.bin }} \
+            -rm local \
+            -rd "${{ inputs.participante }} ${{ github.sha }}" \
+            -s RinhaBackendSimulation \
+            -rf "${PWD}/user-files/results" \
+            -sf "${PWD}/user-files/simulations" \
+            -rsf "${{ steps.carga.outputs.resources-path }}"
+
+          DIRETORIO_ARTEFATO=$(ls ${PWD}/user-files/results | sort | head -n 1)
+          DIRETORIO_ARTEFATO="${PWD}/user-files/results/${DIRETORIO_ARTEFATO}"
+          TIMESTAMP=$(basename ${DIRETORIO_ARTEFATO} | cut -d "-" -f2)
+          NOME_ARTEFATO="${{ inputs.participante }}-${TIMESTAMP}-${{ github.sha }}.tar.gz"
+          CAMINHO_ARTEFATO="${DIRETORIO_ARTEFATO}/${NOME_ARTEFATO}"
+
+          cd ${DIRETORIO_ARTEFATO}
+          tar -zcvf "${NOME_ARTEFATO}" **/*
+
+          echo "::set-output name=caminho-artefato::${CAMINHO_ARTEFATO}"
+
+      - name: Terminando a aplicação
+        working-directory: 'participantes/${{ inputs.participante }}'
+        run: docker compose down --remove-orphans --volumes
+
+      - name: Upload resultado
+        uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v3.1.2
+        if: ${{ steps.teste.outputs.caminho-artefato }}
+        with:
+          name: resultado
+          path: ${{ steps.teste.outputs.caminho-artefato }}
+          retention-days: 90

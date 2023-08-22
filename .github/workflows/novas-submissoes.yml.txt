@@ -1,0 +1,112 @@
+# name: Novas submissões
+
+# on:
+#   push:
+#     branches: [ 'main' ]
+#     paths: [ 'participantes/*/docker-compose.yml' ]
+#   workflow_dispatch:
+
+# env:
+#   GATLING_VERSION: '3.9.5'
+#   JQ_VERSION: '1.7rc1'
+
+# jobs:
+#   novas-ou-alterados:
+#     name: Descobre submissões novas ou alteradas
+#     runs-on: 'ubuntu-22.04'
+
+#     outputs:
+#       matrix: ${{ steps.submissoes.outputs.matrix }}
+
+#     steps:
+#       - name: Checkout da branch
+#         uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
+#         with:
+#           fetch-depth: 150
+
+#       - name: Instala dependecias # por que git, curl, etc não vem instalado nessa joça
+#         run: |
+#           apt-get update -qq && apt-get install -qq -y git curl
+#           curl -fsSL https://github.com/jqlang/jq/releases/download/jq-${{ env.JQ_VERSION }}/jq-linux-amd64 >> /usr/bin/jq
+#           chmod +x /usr/bin/jq
+
+#       - name: Descobre diretório das submissões
+#         id: submissoes
+#         run: |
+#           DIRETORIOS=$(git diff --name-only HEAD~1 | grep docker-compose.yml | xargs dirname % | grep "^participantes/" | sed -e "s/participantes\///g")
+#           MATRIX=$(echo ${DIRETORIOS} | jq --raw-input . | jq --slurp 'map(select(length > 0)) | {participante: .}' | jq -r tostring)
+#           echo "::set-output name=matrix::${MATRIX}"
+
+#   rodar-gatling:
+#     name: Testando submissão de ${{ matrix.participante }}
+#     # runs-on: 'self-hosted'
+#     runs-on: 'ubuntu-22.04'
+#     timeout-minutes: 10
+#     continue-on-error: true
+
+#     needs:
+#       - 'novas-ou-alterados'
+
+#     if: ${{ needs.novas-ou-alterados.outputs.matrix != '{"participante":[]}' }}
+
+#     strategy:
+#       matrix: ${{ fromJson(needs.novas-ou-alterados.outputs.matrix) }}
+#       max-parallel: 1
+
+#     steps:
+#     - name: Checkout da branch
+#       uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
+
+#     - name: Instala o java
+#       uses: actions/setup-java@cd89f46ac9d01407894225f350157564c9c7cee2 # v3.12.2
+#       with:
+#         distribution: temurin
+#         java-version: '17.0.2'
+
+#     - name: Instala dependências
+#       working-directory: testes/stress/
+#       run: |
+#         apt-get update -qq && apt-get install -qq -y curl unzip
+
+#         curl -fsSL https://repo1.maven.org/maven2/io/gatling/highcharts/gatling-charts-highcharts-bundle/${{ env.GATLING_VERSION }}/gatling-charts-highcharts-bundle-${{ env.GATLING_VERSION }}-bundle.zip > ./deps/gatling.zip && \
+#           cd deps/ && \
+#           rm -rf ./gatling && \
+#           unzip gatling.zip && \
+#           mv gatling-charts-highcharts-bundle-${{ env.GATLING_VERSION }} gatling && \
+#           rm gatling.zip
+
+#     - name: Gera carga de teste
+#       # if: ${{ cache.hit == false }}
+#       working-directory: testes/stress/geradores/faker
+#       run: |
+#         npm install
+#         ./gerar-pessoas > ../../user-files/resources/pessoas-payloads.tsv
+#         ./gerar-termos-de-busca > ../../user-files/resources/termos-busca.tsv
+
+#         ls -lah ../../user-files/resources/
+
+#     - name: Sobe o docker compose
+#       working-directory: participantes/${{ matrix.participante }}
+#       run: docker compose down --remove-orphans --volumes && docker compose up -d
+
+#     - name: Espera a aplicação subir
+#       run: sleep 30
+
+#     - name: Roda o Gatling
+#       working-directory: testes/stress
+#       run: |
+#         sh "${PWD}/deps/gatling/bin/gatling.sh" \
+#           -rm local \
+#           -s RinhaBackendSimulation \
+#           -rd "${{ matrix.participante }} ${{ github.sha }}" \
+#           -rf ${PWD}/user-files/results \
+#           -sf ${PWD}/user-files/simulations \
+#           -rsf ${PWD}/user-files/resources
+
+#       # TODO:
+#       # - pega o diretório do resultado: echo GATLING_OUTPUT_FOLDER=$(ls $WORKSPACE/user-files/results | sort | head -n 1) >> $GITHUB_ENV
+#       # - faz alguma coisa com ele
+
+#     - name: Termina a aplicação
+#       working-directory: participantes/${{ matrix.participante }}
+#       run: docker compose down --remove-orphans --volumes
